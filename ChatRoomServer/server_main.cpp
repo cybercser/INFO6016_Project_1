@@ -11,6 +11,7 @@
 #include <stdio.h>
 
 #include <vector>
+#include <map>
 
 // Need to link Ws2_32.lib
 #pragma comment(lib, "Ws2_32.lib")
@@ -19,9 +20,14 @@
 
 using namespace network;
 
-struct ClientInformation {
+struct ClientInfo {
     SOCKET socket;
     bool connected;
+};
+
+struct RoomInfo {
+    std::string roomName;
+    std::vector<std::string> userNames;
 };
 
 struct ServerInfo {
@@ -30,124 +36,16 @@ struct ServerInfo {
     SOCKET listenSocket = INVALID_SOCKET;
     fd_set activeSockets;
     fd_set socketsReadyForReading;
-    std::vector<ClientInformation> clients;
-} g_ServerInfo;
+    std::vector<ClientInfo> clients;
 
-int Initialize() {  // Initialization
-    WSADATA wsaData;
-    int result;
+    // Server cache
+    std::vector<std::string> roomNames{"graphics", "network"};
+    std::map<std::string, RoomInfo> roomName2Room;
+} g_Server;
 
-    FD_ZERO(&g_ServerInfo.activeSockets);
-    FD_ZERO(&g_ServerInfo.socketsReadyForReading);
-
-    printf("WSAStartup . . . ");
-    result = WSAStartup(MAKEWORD(2, 2), &wsaData);
-    if (result != 0) {
-        printf("WSAStartup failed with error %d\n", result);
-        return 1;
-    } else {
-        printf("Success!\n");
-    }
-
-    ZeroMemory(&g_ServerInfo.hints, sizeof(g_ServerInfo.hints));
-    g_ServerInfo.hints.ai_family = AF_INET;        // IPV4
-    g_ServerInfo.hints.ai_socktype = SOCK_STREAM;  // Stream
-    g_ServerInfo.hints.ai_protocol = IPPROTO_TCP;  // TCP
-    g_ServerInfo.hints.ai_flags = AI_PASSIVE;
-
-    printf("Creating our AddrInfo . . . ");
-    result = getaddrinfo(NULL, DEFAULT_PORT, &g_ServerInfo.hints, &g_ServerInfo.info);
-    if (result != 0) {
-        printf("getaddrinfo failed with error: %d\n", result);
-        WSACleanup();
-        return 1;
-    } else {
-        printf("Success!\n");
-    }
-
-    // Create our socket [Socket]
-    printf("Creating our Listen Socket . . . ");
-    g_ServerInfo.listenSocket =
-        socket(g_ServerInfo.info->ai_family, g_ServerInfo.info->ai_socktype, g_ServerInfo.info->ai_protocol);
-    if (g_ServerInfo.listenSocket == INVALID_SOCKET) {
-        printf("Socket failed with error: %d\n", WSAGetLastError());
-        freeaddrinfo(g_ServerInfo.info);
-        WSACleanup();
-        return 1;
-    } else {
-        printf("Success!\n");
-    }
-
-    // 12,14,1,3:80				Address lengths can be different
-    // 123,111,230,109:55555	Must specify the length
-    // Bind our socket [Bind]
-    printf("Calling Bind . . . ");
-    result = bind(g_ServerInfo.listenSocket, g_ServerInfo.info->ai_addr, (int)g_ServerInfo.info->ai_addrlen);
-    if (result == SOCKET_ERROR) {
-        printf("bind failed with error: %d\n", WSAGetLastError());
-        freeaddrinfo(g_ServerInfo.info);
-        closesocket(g_ServerInfo.listenSocket);
-        WSACleanup();
-        return 1;
-    } else {
-        printf("Success!\n");
-    }
-
-    // [Listen]
-    printf("Calling Listen . . . ");
-    result = listen(g_ServerInfo.listenSocket, SOMAXCONN);
-    if (result == SOCKET_ERROR) {
-        printf("listen failed with error: %d\n", WSAGetLastError());
-        freeaddrinfo(g_ServerInfo.info);
-        closesocket(g_ServerInfo.listenSocket);
-        WSACleanup();
-        return 1;
-    } else {
-        printf("Success!\n");
-    }
-
-    return 0;
-}
-
-void ShutDown() {
-    // Close
-    printf("Closing . . . \n");
-    freeaddrinfo(g_ServerInfo.info);
-    closesocket(g_ServerInfo.listenSocket);
-    WSACleanup();
-}
-
-void HandleMessage(MessageType msgType, ClientInformation& client, Buffer& recvBuf, Buffer& sendBuf) {
-    switch (msgType) {
-        case MessageType::LoginReq: {
-            // received C2S_LoginReqMsg
-            uint32_t userNameLength = recvBuf.ReadUInt32LE();
-            std::string userName = recvBuf.ReadString(userNameLength);
-            uint32_t passwordLength = recvBuf.ReadUInt32LE();
-            std::string password = recvBuf.ReadString(passwordLength);
-            // TODO: user authentication
-            printf("Authenticating user...\n");
-            printf("User %s login successfully.\n", userName.c_str());
-
-            // respond with S2C_LoginAckMsg
-            std::vector<std::string> roomNames{"graphics_1", "network_programming"};
-            S2C_LoginAckMsg response{200, roomNames};
-            response.Serialize(sendBuf);
-            // https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-send
-            int sendResult = send(client.socket, sendBuf.ConstData(), response.header.packetSize, 0);
-            if (sendResult == SOCKET_ERROR) {
-                printf("send failed with error %d\n", WSAGetLastError());
-                WSACleanup();
-                break;
-            }
-        }
-
-        break;
-        default:
-            printf("Unknown message.\n");
-            break;
-    }
-}
+int Initialize();                                                                               // Initialization
+void ShutDown();                                                                                // Close
+void HandleMessage(MessageType msgType, ClientInfo& client, Buffer& recvBuf, Buffer& sendBuf);  // Handle message
 
 int main(int argc, char** argv) {
     // Initialization
@@ -171,7 +69,7 @@ int main(int argc, char** argv) {
     // select work here
     for (;;) {
         // SocketsReadyForReading will be empty here
-        FD_ZERO(&g_ServerInfo.socketsReadyForReading);
+        FD_ZERO(&g_Server.socketsReadyForReading);
 
         // Add all the sockets that have data ready to be recv'd
         // to the socketsReadyForReading
@@ -181,21 +79,21 @@ int main(int argc, char** argv) {
         //  All connectedClients' socket
         //
         // 1. Add the listen socket, to see if there are any new connections
-        FD_SET(g_ServerInfo.listenSocket, &g_ServerInfo.socketsReadyForReading);
+        FD_SET(g_Server.listenSocket, &g_Server.socketsReadyForReading);
 
         // 2. Add all the connected sockets, to see if the is any information
         //    to be recieved from the connected clients.
-        for (int i = 0; i < g_ServerInfo.clients.size(); i++) {
-            ClientInformation& client = g_ServerInfo.clients[i];
+        for (int i = 0; i < g_Server.clients.size(); i++) {
+            ClientInfo& client = g_Server.clients[i];
             if (client.connected) {
-                FD_SET(client.socket, &g_ServerInfo.socketsReadyForReading);
+                FD_SET(client.socket, &g_Server.socketsReadyForReading);
             }
         }
 
         // Select will check all sockets in the SocketsReadyForReading set
         // to see if there is any data to be read on the socket.
         // https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-select
-        selectResult = select(0, &g_ServerInfo.socketsReadyForReading, NULL, NULL, &tv);
+        selectResult = select(0, &g_Server.socketsReadyForReading, NULL, NULL, &tv);
         if (selectResult == 0) {
             // Time limit expired
             continue;
@@ -209,30 +107,30 @@ int main(int argc, char** argv) {
         // Check if our ListenSocket is set. This checks if there is a
         // new client trying to connect to the server using a "connect"
         // function call.
-        if (FD_ISSET(g_ServerInfo.listenSocket, &g_ServerInfo.socketsReadyForReading)) {
+        if (FD_ISSET(g_Server.listenSocket, &g_Server.socketsReadyForReading)) {
             printf("\n");
 
             // [Accept]
             printf("Calling Accept . . . ");
-            SOCKET clientSocket = accept(g_ServerInfo.listenSocket, NULL, NULL);
+            SOCKET clientSocket = accept(g_Server.listenSocket, NULL, NULL);
             if (clientSocket == INVALID_SOCKET) {
                 printf("Accept failed with error: %d\n", WSAGetLastError());
             } else {
                 printf("Success!\n");
-                ClientInformation newClient;
+                ClientInfo newClient;
                 newClient.socket = clientSocket;
                 newClient.connected = true;
-                g_ServerInfo.clients.push_back(newClient);
+                g_Server.clients.push_back(newClient);
             }
         }
 
         // Check if any of the currently connected clients have sent data using send
-        for (int i = 0; i < g_ServerInfo.clients.size(); i++) {
-            ClientInformation& client = g_ServerInfo.clients[i];
+        for (int i = 0; i < g_Server.clients.size(); i++) {
+            ClientInfo& client = g_Server.clients[i];
 
             if (!client.connected) continue;
 
-            if (FD_ISSET(client.socket, &g_ServerInfo.socketsReadyForReading)) {
+            if (FD_ISSET(client.socket, &g_Server.socketsReadyForReading)) {
                 // https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-recv
                 // result
                 //		-1 : SOCKET_ERROR (More info received from WSAGetLastError() after)
@@ -269,11 +167,144 @@ int main(int argc, char** argv) {
                     HandleMessage(messageType, client, recvBuf, sendBuf);
                 }
 
-                FD_CLR(client.socket, &g_ServerInfo.socketsReadyForReading);
+                FD_CLR(client.socket, &g_Server.socketsReadyForReading);
             }
         }
     }
 
     ShutDown();
     return 0;
+}
+
+int Initialize() {
+    WSADATA wsaData;
+    int result;
+
+    FD_ZERO(&g_Server.activeSockets);
+    FD_ZERO(&g_Server.socketsReadyForReading);
+
+    printf("WSAStartup . . . ");
+    result = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (result != 0) {
+        printf("WSAStartup failed with error %d\n", result);
+        return 1;
+    } else {
+        printf("Success!\n");
+    }
+
+    ZeroMemory(&g_Server.hints, sizeof(g_Server.hints));
+    g_Server.hints.ai_family = AF_INET;        // IPV4
+    g_Server.hints.ai_socktype = SOCK_STREAM;  // Stream
+    g_Server.hints.ai_protocol = IPPROTO_TCP;  // TCP
+    g_Server.hints.ai_flags = AI_PASSIVE;
+
+    printf("Creating our AddrInfo . . . ");
+    result = getaddrinfo(NULL, DEFAULT_PORT, &g_Server.hints, &g_Server.info);
+    if (result != 0) {
+        printf("getaddrinfo failed with error: %d\n", result);
+        WSACleanup();
+        return 1;
+    } else {
+        printf("Success!\n");
+    }
+
+    // Create our socket [Socket]
+    printf("Creating our Listen Socket . . . ");
+    g_Server.listenSocket = socket(g_Server.info->ai_family, g_Server.info->ai_socktype, g_Server.info->ai_protocol);
+    if (g_Server.listenSocket == INVALID_SOCKET) {
+        printf("Socket failed with error: %d\n", WSAGetLastError());
+        freeaddrinfo(g_Server.info);
+        WSACleanup();
+        return 1;
+    } else {
+        printf("Success!\n");
+    }
+
+    // 12,14,1,3:80				Address lengths can be different
+    // 123,111,230,109:55555	Must specify the length
+    // Bind our socket [Bind]
+    printf("Calling Bind . . . ");
+    result = bind(g_Server.listenSocket, g_Server.info->ai_addr, (int)g_Server.info->ai_addrlen);
+    if (result == SOCKET_ERROR) {
+        printf("bind failed with error: %d\n", WSAGetLastError());
+        freeaddrinfo(g_Server.info);
+        closesocket(g_Server.listenSocket);
+        WSACleanup();
+        return 1;
+    } else {
+        printf("Success!\n");
+    }
+
+    // [Listen]
+    printf("Calling Listen . . . ");
+    result = listen(g_Server.listenSocket, SOMAXCONN);
+    if (result == SOCKET_ERROR) {
+        printf("listen failed with error: %d\n", WSAGetLastError());
+        freeaddrinfo(g_Server.info);
+        closesocket(g_Server.listenSocket);
+        WSACleanup();
+        return 1;
+    } else {
+        printf("Success!\n");
+    }
+
+    return 0;
+}
+
+void ShutDown() {
+    printf("Closing ...\n");
+    freeaddrinfo(g_Server.info);
+    closesocket(g_Server.listenSocket);
+    WSACleanup();
+}
+
+void HandleMessage(MessageType msgType, ClientInfo& client, Buffer& recvBuf, Buffer& sendBuf) {
+    switch (msgType) {
+        case MessageType::LoginReq: {
+            // received C2S_LoginReqMsg
+            uint32_t userNameLength = recvBuf.ReadUInt32LE();
+            std::string userName = recvBuf.ReadString(userNameLength);
+            uint32_t passwordLength = recvBuf.ReadUInt32LE();
+            std::string password = recvBuf.ReadString(passwordLength);
+            // TODO: user authentication
+            printf("Authenticating user...\n");
+            printf("User %s login successfully.\n", userName.c_str());
+
+            // respond with S2C_LoginAckMsg
+            S2C_LoginAckMsg response{200, g_Server.roomNames};
+            response.Serialize(sendBuf);
+            // https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-send
+            int sendResult = send(client.socket, sendBuf.ConstData(), response.header.packetSize, 0);
+            if (sendResult == SOCKET_ERROR) {
+                printf("send failed with error %d\n", WSAGetLastError());
+                WSACleanup();
+            }
+        } break;
+
+        case MessageType::JoinRoomReq: {
+            // received C2S_JoinRoomReqMsg
+            uint32_t userNameLength = recvBuf.ReadUInt32LE();
+            std::string userName = recvBuf.ReadString(userNameLength);
+            uint32_t roomNameLength = recvBuf.ReadUInt32LE();
+            std::string roomName = recvBuf.ReadString(roomNameLength);
+
+            // respond with S2C_JoinRoomAckMsg
+            std::vector<std::string> userNames{"Alice", "Bob"};
+            userNames.push_back(userName);
+            S2C_JoinRoomAckMsg response{200, roomName, userNames};
+            response.Serialize(sendBuf);
+            int sendResult = send(client.socket, sendBuf.ConstData(), response.header.packetSize, 0);
+            if (sendResult == SOCKET_ERROR) {
+                printf("send failed with error %d\n", WSAGetLastError());
+                WSACleanup();
+            }
+        } break;
+
+        case MessageType::LeaveRoomReq:
+            break;
+
+        default:
+            printf("Unknown message.\n");
+            break;
+    }
 }

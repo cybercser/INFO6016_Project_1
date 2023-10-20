@@ -5,8 +5,6 @@
 #include <string>
 #include <vector>
 
-// Message, aka. protocol
-
 namespace network {
 // forward decalaration
 class Buffer;
@@ -27,42 +25,56 @@ struct PacketHeader {
     uint32 messageType;
 };
 
-// Login req message
-struct C2S_LoginReqMsg {
+// the Message (aka. protocol) base class
+struct Message {
     PacketHeader header;
+    virtual void Serialize(Buffer& buf);
+};
+
+// Login req message
+struct C2S_LoginReqMsg : public Message {
     uint32 userNameLength;
     std::string userName;
     uint32 passwordLength;
     std::string password;
 
     C2S_LoginReqMsg(const std::string& strUserName, const std::string& strPassword);
-    void Serialize(Buffer& buf);
+    void Serialize(Buffer& buf) override;
 };
 
 // Login ack message
-struct S2C_LoginAckMsg {
-    PacketHeader header;
+struct S2C_LoginAckMsg : public Message {
     uint16 loginStatus;
     uint32 roomListLength;
     std::vector<uint32> roomNameLengths;
     std::vector<std::string> roomNames;
 
     S2C_LoginAckMsg(uint16 iStatus, const std::vector<std::string>& vecRoomNames);
-    void Serialize(Buffer& buf);
+    void Serialize(Buffer& buf) override;
 };
 
 // JoinRoom req message
-struct C2S_JoinRoomReqMsg {
-    PacketHeader header;
+struct C2S_JoinRoomReqMsg : public Message {
+    uint32 userNameLength;
+    std::string userName;
     uint32 roomNameLength;
     std::string roomName;
+
+    C2S_JoinRoomReqMsg(const std::string& strUserName, const std::string& strRoomName);
+    void Serialize(Buffer& buf) override;
 };
 
 // JoinRoom ack message
-struct S2C_JoinRoomAckMsg {
-    PacketHeader header;
+struct S2C_JoinRoomAckMsg : public Message {
+    uint16 joinStatus;
     uint32 roomNameLength;
     std::string roomName;
+    uint32 userListLength;
+    std::vector<uint32> userNameLengths;
+    std::vector<std::string> userNames;
+
+    S2C_JoinRoomAckMsg(uint16 iStatus, const std::string& strRoomName, const std::vector<std::string>& vecUserNames);
+    void Serialize(Buffer& buf) override;
 };
 
 // LeaveRoom req message

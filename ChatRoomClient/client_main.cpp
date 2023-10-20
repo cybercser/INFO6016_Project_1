@@ -1,53 +1,25 @@
 // WinSock2 Windows Sockets
 #define WIN32_LEAN_AND_MEAN
 
+#include "buffer.h"
+#include "message.h"
+
 #include <Windows.h>
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 #include <stdlib.h>
 #include <stdio.h>
 
+#include <string>
+
 // Need to link Ws2_32.lib
 #pragma comment(lib, "Ws2_32.lib")
 
 #define DEFAULT_PORT "5555"
 
-#include "buffer.h"
-#include "message.h"
-
-#include <string>
-
 using namespace network;
 
-void HandleMessage(MessageType msgType, Buffer& recvBuf) {
-    switch (msgType) {
-        case MessageType::LoginAck: {
-            uint16 loginStatus = recvBuf.ReadUInt16LE();
-            if (loginStatus == 200) {
-                uint32 roomListLength = recvBuf.ReadUInt32LE();
-                std::vector<uint32> roomNameLengths;
-                for (size_t i = 0; i < roomListLength; i++) {
-                    roomNameLengths.push_back(recvBuf.ReadUInt32LE());
-                }
-
-                printf("Rooms:\n");
-                std::vector<std::string> roomNames;
-                for (size_t i = 0; i < roomListLength; i++) {
-                    std::string roomName = recvBuf.ReadString(roomNameLengths[i]);
-                    roomNames.push_back(roomName);
-                    printf("%s\n", roomName.c_str());
-                }
-            } else {
-            }
-        }
-
-        break;
-
-        default:
-            printf("Unknown message.\n");
-            break;
-    }
-}
+void HandleMessage(MessageType msgType, Buffer& recvBuf);
 
 int main(int argc, char** argv) {
     // Initialization
@@ -115,12 +87,12 @@ int main(int argc, char** argv) {
     constexpr int kSEND_BUF_SIZE = 512;
     Buffer sendBuf{kSEND_BUF_SIZE};
 
-    C2S_LoginReqMsg msg{"fan", "fan"};
-    msg.Serialize(sendBuf);
+    // [send] - C2S_LoginReqMsg
+    C2S_LoginReqMsg loginReqMsg{"fan", "fan"};
+    loginReqMsg.Serialize(sendBuf);
 
-    // [send]
-    printf("Sending message to the server . . . ");
-    result = send(connectSocket, sendBuf.ConstData(), msg.header.packetSize, 0);
+    printf("Logining to ChatRoom server . . . ");
+    result = send(connectSocket, sendBuf.ConstData(), loginReqMsg.header.packetSize, 0);
     if (result == SOCKET_ERROR) {
         printf("send failed with error: %d\n", WSAGetLastError());
         closesocket(connectSocket);
@@ -132,8 +104,8 @@ int main(int argc, char** argv) {
     }
 
     bool tryAgain = true;
-
     while (tryAgain) {
+        ZeroMemory(rawRecvBuf, kRECV_BUF_SIZE);
         result = recv(connectSocket, rawRecvBuf, kRECV_BUF_SIZE, 0);
         // Expected result values:
         // 0 = closed connection, disconnection
@@ -168,6 +140,23 @@ int main(int argc, char** argv) {
         }
     }
 
+    // [send] - C2S_JoinRoomReqMsg
+    C2S_JoinRoomReqMsg joinRoomMsg{"fan", "graphics"};
+    joinRoomMsg.Serialize(sendBuf);
+
+    printf("Joining room graphics_1 . . . ");
+    result = send(connectSocket, sendBuf.ConstData(), joinRoomMsg.header.packetSize, 0);
+
+    ZeroMemory(rawRecvBuf, kRECV_BUF_SIZE);
+    result = recv(connectSocket, rawRecvBuf, kRECV_BUF_SIZE, 0);
+    Buffer recvBuf{rawRecvBuf, kRECV_BUF_SIZE};
+    uint32_t packetSize = recvBuf.ReadUInt32LE();
+    MessageType messageType = static_cast<MessageType>(recvBuf.ReadUInt32LE());
+
+    if (recvBuf.Size() >= packetSize) {
+        HandleMessage(messageType, recvBuf);
+    }
+
     // Close
     printf("Shutdown . . . ");
     result = shutdown(connectSocket, SD_SEND);
@@ -185,4 +174,62 @@ int main(int argc, char** argv) {
     WSACleanup();
 
     return 0;
+}
+
+void HandleMessage(MessageType msgType, Buffer& recvBuf) {
+    switch (msgType) {
+        case MessageType::LoginAck: {
+            uint16 loginStatus = recvBuf.ReadUInt16LE();
+            if (loginStatus == 200) {
+                uint32 roomListLength = recvBuf.ReadUInt32LE();
+                std::vector<uint32> roomNameLengths;
+                for (size_t i = 0; i < roomListLength; i++) {
+                    roomNameLengths.push_back(recvBuf.ReadUInt32LE());
+                }
+
+                printf("Rooms:\n");
+                std::vector<std::string> roomNames;
+                for (size_t i = 0; i < roomListLength; i++) {
+                    std::string roomName = recvBuf.ReadString(roomNameLengths[i]);
+                    roomNames.push_back(roomName);
+                    printf("%s\n", roomName.c_str());
+                }
+            } else {
+                printf("Loign failed, status: %d\n", loginStatus);
+            }
+        }
+
+        break;
+
+        case MessageType::JoinRoomAck: {
+            uint16 joinStatus = recvBuf.ReadUInt16LE();
+            if (joinStatus == 200) {
+                uint32 roomNameLength = recvBuf.ReadUInt32LE();
+                std::string roomName = recvBuf.ReadString(roomNameLength);
+
+                uint32 userListLength = recvBuf.ReadUInt32LE();
+                std::vector<uint32> userNameLengths;
+                for (size_t i = 0; i < userListLength; i++) {
+                    userNameLengths.push_back(recvBuf.ReadUInt32LE());
+                }
+
+                printf("Users in Room %s:\n", roomName.c_str());
+                std::vector<std::string> userNames;
+                for (size_t i = 0; i < userListLength; i++) {
+                    std::string userName = recvBuf.ReadString(userNameLengths[i]);
+                    userNames.push_back(userName);
+                    printf("%s\n", userName.c_str());
+                }
+            } else {
+                printf("JoinRoom failed, status: %d\n", joinStatus);
+            }
+        } break;
+
+        case MessageType::LeaveRoomAck:
+            break;
+
+        default:
+            printf("Unknown message.\n");
+            break;
+    }
 }

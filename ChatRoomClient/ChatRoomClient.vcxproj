@@ -134,6 +134,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\Shared\buffer.cpp" />
+    <ClCompile Include="..\Shared\message.cpp" />
     <ClCompile Include="client_main.cpp" />
   </ItemGroup>
   <ItemGroup>

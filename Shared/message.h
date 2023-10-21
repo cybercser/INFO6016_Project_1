@@ -1,23 +1,45 @@
 #pragma once
 
-#include "common.h"
-
 #include <string>
 #include <vector>
+
+#include "common.h"
 
 namespace network {
 // forward decalaration
 class Buffer;
 
 // Naming convention:
-// Req = request, usually the client request the server for something
-// Ack = acknowledge, usually the server answer the client's request
-// Ntf = notify, usually the server actively notify the clients
+// prefixes:
 // C2S = client to server
 // S2C = server to client
+//
+// suffixes:
+// Req = request, the client request the server for service
+// Ack = acknowledge, the server responde the client's request
+// Ntf = notify, the server notify the clients
 
 // The message type (protocol unique id)
-enum MessageType { LoginReq, LoginAck, JoinRoomReq, JoinRoomAck, LeaveRoomReq, LeaveRoomAck, SendMessageToRoom };
+enum MessageType {
+    kLOGIN_REQ = 1001,
+    kLOGIN_ACK = 1002,
+    kJOIN_ROOM_REQ = 1003,
+    kJOIN_ROOM_ACK = 1004,
+    kJOIN_ROOM_NTF = 1005,
+    kLEAVE_ROOM_REQ = 1006,
+    kLEAVE_ROOM_ACK = 1007,
+    kLEAVE_ROOM_NTF = 1008,
+    kCHAT_IN_ROOM_REQ = 1009,
+    kCHAT_IN_ROOM_ACK = 1010,
+    kCHAT_IN_ROOM_NTF = 1011,
+};
+
+// The message status code
+enum MessageStatus {
+    kSUCCESS = 200,
+    kFAILURE = 400,
+    kERROR = 500,
+};
 
 // The fixed-length packet header
 struct PacketHeader {
@@ -77,37 +99,90 @@ struct S2C_JoinRoomAckMsg : public Message {
     void Serialize(Buffer& buf) override;
 };
 
+// JoinRoom ntf message
+// to broadcast the event that someone has joined the room
+struct S2C_JoinRoomNtfMsg : public Message {
+    uint32 roomNameLength;
+    std::string roomName;
+    uint32 userNameLength;
+    std::string userName;
+
+    S2C_JoinRoomNtfMsg(const std::string& strRoomName, const std::string& strUserName);
+    void Serialize(Buffer& buf) override;
+};
+
 // LeaveRoom req message
-struct C2S_LeaveRoomReqMsg {
-    PacketHeader header;
+struct C2S_LeaveRoomReqMsg : public Message {
+    uint32 roomNameLength;
+    std::string roomName;
+    uint32 userNameLength;
+    std::string userName;
+
+    C2S_LeaveRoomReqMsg(const std::string& strRoomName, const std::string& strUserName);
+    void Serialize(Buffer& buf) override;
 };
 
 // LeaveRoom ack message
-struct C2S_LeaveRoomAckMsg {
-    PacketHeader header;
+struct S2C_LeaveRoomAckMsg : public Message {
+    uint16 leaveStatus;
+    uint32 roomNameLength;
+    std::string roomName;
+    uint32 userNameLength;
+    std::string userName;
+
+    S2C_LeaveRoomAckMsg(uint16 iStatus, const std::string& strRoomName, const std::string& strUserName);
+    void Serialize(Buffer& buf) override;
 };
 
-// Chat req message
-struct C2S_ChatReqMsg {
-    PacketHeader header;
-    uint32 chatLength;
-    std::string chat;
+// LeaveRoom ntf message
+// to broadcast the event that someone has left the room
+struct S2C_LeaveRoomNtfMsg : public Message {
+    uint32 roomNameLength;
+    std::string roomName;
+    uint32 userNameLength;
+    std::string userName;
+
+    S2C_LeaveRoomNtfMsg(const std::string& strRoomName, const std::string& strUserName);
+    void Serialize(Buffer& buf) override;
 };
 
-// Chat ack message
-struct C2S_ChatAckMsg {
-    PacketHeader header;
-    uint32 chatLength;
-    std::string chat;
-};
-
-// Chat ntf message, to broadcast the chat in a room
-struct C2S_ChatNtfMsg {
-    PacketHeader header;
+// ChatInRoom req message
+struct C2S_ChatInRoomReqMsg : public Message {
+    uint32 roomNameLength;
+    std::string roomName;
     uint32 userNameLength;
     std::string userName;
     uint32 chatLength;
     std::string chat;
+
+    C2S_ChatInRoomReqMsg(const std::string& strRoomName, const std::string& strUserName, const std::string& strChat);
+    void Serialize(Buffer& buf) override;
+};
+
+// ChatInRoom ack message
+struct S2C_ChatInRoomAckMsg : public Message {
+    uint16 chatStatus;
+    uint32 roomNameLength;
+    std::string roomName;
+    uint32 userNameLength;
+    std::string userName;
+
+    S2C_ChatInRoomAckMsg(uint16 iStatus, const std::string& strRoomName, const std::string& strUserName);
+    void Serialize(Buffer& buf) override;
+};
+
+// ChatInRoom ntf message
+// to broadcast someone's chat in a room
+struct S2C_ChatInRoomNtfMsg : public Message {
+    uint32 roomNameLength;
+    std::string roomName;
+    uint32 userNameLength;
+    std::string userName;
+    uint32 chatLength;
+    std::string chat;
+
+    S2C_ChatInRoomNtfMsg(const std::string& strRoomName, const std::string& strUserName, const std::string& strChat);
+    void Serialize(Buffer& buf) override;
 };
 
 }  // end of namespace network

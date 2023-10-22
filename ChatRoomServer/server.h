@@ -39,15 +39,15 @@ public:
     int AckLogin(ClientInfo& client, network::MessageStatus status, const std::vector<std::string>& roomNames);
     int AckJoinRoom(ClientInfo& client, network::MessageStatus status, const std::string& roomName,
                     std::vector<std::string>& userNames);
-    int BroadcastJoinRoom(ClientInfo& client, const std::set<std::string>& usersInRoom, const std::string& roomName,
+    int BroadcastJoinRoom(const std::set<std::string>& usersInRoom, const std::string& roomName,
                           const std::string& userName);
     int AckLeaveRoom(ClientInfo& client, network::MessageStatus status, const std::string& roomName,
                      const std::string& userName);
-    int BroadcastLeaveRoom(ClientInfo& client, const std::set<std::string>& usersInRoom, const std::string& roomName,
+    int BroadcastLeaveRoom(const std::set<std::string>& usersInRoom, const std::string& roomName,
                            const std::string& userName);
     int AckChatInRoom(ClientInfo& client, network::MessageStatus status, const std::string& roomName,
                       const std::string& userName);
-    int BroadcastChatInRoom(ClientInfo& client, const std::set<std::string>& usersInRoom, const std::string& roomName,
+    int BroadcastChatInRoom(const std::set<std::string>& usersInRoom, const std::string& roomName,
                             const std::string& userName, const std::string& chat);
 
 private:
@@ -58,7 +58,7 @@ private:
 
 private:
     // low-level network stuff
-    ConnectionInfo g_Connection;
+    ConnectionInfo m_Conn;
 
     // send/recv buffer
     static constexpr int kRECV_BUF_SIZE = 512;
@@ -69,7 +69,7 @@ private:
     network::Buffer m_SendBuf{kSEND_BUF_SIZE};
 
     // Server cache
-    std::map<std::string, ClientInfo*> m_ClientMap;          // userName (string) -> ClientInfo*
+    std::map<std::string, size_t> m_ClientMap;  // userName (string) -> ClientInfo index in m_Conn.clients
     std::map<std::string, std::set<std::string>> m_RoomMap;  // roomName (string) -> userNames (set of string)
     std::vector<std::string> m_RoomNames;                    // all the keys of m_RoomMap
 };

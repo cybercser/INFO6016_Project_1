@@ -107,7 +107,7 @@ int ChatRoomClient::SendRequest(network::Message* msg) {
         WSACleanup();
         return result;
     } else {
-        printf("sent msg %d (%d bytes) to the server!\n", msg->header.messageType, result);
+        printf("\tsent msg %d (%d bytes) to the server!\n", msg->header.messageType, result);
     }
 
     return result;
@@ -144,7 +144,7 @@ int ChatRoomClient::RecvResponse() {
             uint32_t packetSize = m_RecvBuf.ReadUInt32LE();
             MessageType messageType = static_cast<MessageType>(m_RecvBuf.ReadUInt32LE());
 
-            printf("recv msg %d (%d bytes) from the server!\n", messageType, result);
+            printf("\trecv msg %d (%d bytes) from the server!\n", messageType, result);
 
             if (m_RecvBuf.Size() >= packetSize) {
                 HandleMessage(messageType);
@@ -154,17 +154,17 @@ int ChatRoomClient::RecvResponse() {
         }
     }
     // the blocking version
-    //// Receive until the peer closes the connection
+    // Receive until the peer closes the connection
     // do {
-    //     result = recv(m_ConnectSocket, m_RawRecvBuf, kRECV_BUF_SIZE, 0);
-    //     if (result > 0) {
-    //         printf("received: %d bytes\n", result);
-    //         Buffer m_RecvBuf{m_RawRecvBuf, kRECV_BUF_SIZE};
-    //         uint32_t packetSize = m_RecvBuf.ReadUInt32LE();
-    //         MessageType messageType = static_cast<MessageType>(m_RecvBuf.ReadUInt32LE());
+    //    result = recv(m_ConnectSocket, m_RawRecvBuf, kRECV_BUF_SIZE, 0);
+    //    if (result > 0) {
+    //        printf("received: %d bytes\n", result);
+    //        Buffer m_RecvBuf{m_RawRecvBuf, kRECV_BUF_SIZE};
+    //        uint32_t packetSize = m_RecvBuf.ReadUInt32LE();
+    //        MessageType messageType = static_cast<MessageType>(m_RecvBuf.ReadUInt32LE());
 
     //        if (m_RecvBuf.Size() >= packetSize) {
-    //            HandleMessage(messageType, m_RecvBuf);
+    //            HandleMessage(messageType);
     //        }
     //    } else if (result == 0) {
     //        printf("Connection closed\n");
@@ -216,7 +216,6 @@ void ChatRoomClient::PrintRooms(const std::vector<std::string>& roomNames) const
     for (size_t i = 0; i < roomNames.size(); i++) {
         std::cout << i + 1 << " " << roomNames[i] << std::endl;
     }
-    std::cout << "-------------\n";
 }
 
 // print the users in a room
@@ -231,7 +230,6 @@ void ChatRoomClient::PrintUsersInRoom(const std::string& roomName) const {
             i++;
         }
     }
-    std::cout << "-------------------------\n";
 }
 
 // Handle received messages

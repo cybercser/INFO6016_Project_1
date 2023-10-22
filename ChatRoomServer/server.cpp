@@ -28,7 +28,11 @@ ChatRoomServer::ChatRoomServer(uint16 port) {
 
 ChatRoomServer::~ChatRoomServer() { Shutdown(); }
 
-int ChatRoomServer::RunLoop() {  // Define timeout for select()
+int ChatRoomServer::RunLoop() {
+    FD_ZERO(&(m_Conn.activeSockets));  // Initialize the sets
+    FD_ZERO(&(m_Conn.socketsReadyForReading));
+
+    // Define timeout for select()
     struct timeval tv;
     tv.tv_sec = 0;
     tv.tv_usec = 500 * 1000;  // 500 milliseconds, half a second
@@ -38,7 +42,7 @@ int ChatRoomServer::RunLoop() {  // Define timeout for select()
     // select work here
     for (;;) {
         // SocketsReadyForReading will be empty here
-        FD_ZERO(&g_Connection.socketsReadyForReading);
+        FD_ZERO(&m_Conn.socketsReadyForReading);
 
         // Add all the sockets that have data ready to be recv'd
         // to the socketsReadyForReading
@@ -48,21 +52,21 @@ int ChatRoomServer::RunLoop() {  // Define timeout for select()
         //  All connectedClients' socket
         //
         // 1. Add the listen socket, to see if there are any new connections
-        FD_SET(g_Connection.listenSocket, &g_Connection.socketsReadyForReading);
+        FD_SET(m_Conn.listenSocket, &m_Conn.socketsReadyForReading);
 
         // 2. Add all the connected sockets, to see if the is any information
         //    to be recieved from the connected clients.
-        for (int i = 0; i < g_Connection.clients.size(); i++) {
-            ClientInfo& client = g_Connection.clients[i];
+        for (int i = 0; i < m_Conn.clients.size(); i++) {
+            ClientInfo& client = m_Conn.clients[i];
             if (client.connected) {
-                FD_SET(client.socket, &g_Connection.socketsReadyForReading);
+                FD_SET(client.socket, &m_Conn.socketsReadyForReading);
             }
         }
 
         // Select will check all sockets in the SocketsReadyForReading set
         // to see if there is any data to be read on the socket.
         // https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-select
-        selectResult = select(0, &g_Connection.socketsReadyForReading, NULL, NULL, &tv);
+        selectResult = select(0, &m_Conn.socketsReadyForReading, NULL, NULL, &tv);
         if (selectResult == 0) {
             // Time limit expired
             continue;
@@ -71,16 +75,13 @@ int ChatRoomServer::RunLoop() {  // Define timeout for select()
             printf("select failed with error: %d\n", WSAGetLastError());
             return selectResult;
         }
-        printf(".\n");
 
         // Check if our ListenSocket is set. This checks if there is a
         // new client trying to connect to the server using a "connect"
         // function call.
-        if (FD_ISSET(g_Connection.listenSocket, &g_Connection.socketsReadyForReading)) {
-            printf("\n");
-
+        if (FD_ISSET(m_Conn.listenSocket, &m_Conn.socketsReadyForReading)) {
             // [Accept]
-            SOCKET clientSocket = accept(g_Connection.listenSocket, NULL, NULL);
+            SOCKET clientSocket = accept(m_Conn.listenSocket, NULL, NULL);
             if (clientSocket == INVALID_SOCKET) {
                 printf("accept failed with error: %d\n", WSAGetLastError());
             } else {
@@ -88,17 +89,17 @@ int ChatRoomServer::RunLoop() {  // Define timeout for select()
                 ClientInfo newClient;
                 newClient.socket = clientSocket;
                 newClient.connected = true;
-                g_Connection.clients.push_back(newClient);
+                m_Conn.clients.push_back(newClient);
             }
         }
 
         // Check if any of the currently connected clients have sent data using send
-        for (int i = 0; i < g_Connection.clients.size(); i++) {
-            ClientInfo& client = g_Connection.clients[i];
+        for (int i = 0; i < m_Conn.clients.size(); i++) {
+            ClientInfo& client = m_Conn.clients[i];
 
             if (!client.connected) continue;
 
-            if (FD_ISSET(client.socket, &g_Connection.socketsReadyForReading)) {
+            if (FD_ISSET(client.socket, &m_Conn.socketsReadyForReading)) {
                 // https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-recv
                 // result
                 //		-1 : SOCKET_ERROR (More info received from WSAGetLastError() after)
@@ -121,7 +122,7 @@ int ChatRoomServer::RunLoop() {  // Define timeout for select()
                     continue;
                 }
 
-                printf("received %d bytes from client.\n", recvResult);
+                printf("recv %d bytes from client.\n", recvResult);
 
                 // We must receive 4 bytes before we know how long the packet actually is
                 // We must receive the entire packet before we can handle the message.
@@ -135,7 +136,7 @@ int ChatRoomServer::RunLoop() {  // Define timeout for select()
                     HandleMessage(messageType, client);
                 }
 
-                FD_CLR(client.socket, &g_Connection.socketsReadyForReading);
+                FD_CLR(client.socket, &m_Conn.socketsReadyForReading);
             }
         }
     }
@@ -157,15 +158,16 @@ int ChatRoomServer::AckJoinRoom(ClientInfo& client, network::MessageStatus statu
 }
 
 // [send] S2C_JoinRoomNtfMsg
-int ChatRoomServer::BroadcastJoinRoom(ClientInfo& client, const std::set<std::string>& usersInRoom,
-                                      const std::string& roomName, const std::string& userName) {
+int ChatRoomServer::BroadcastJoinRoom(const std::set<std::string>& usersInRoom, const std::string& roomName,
+                                      const std::string& userName) {
     for (const std::string& name : usersInRoom) {
         if (name != userName) {
-            std::map<std::string, ClientInfo*>::iterator it = m_ClientMap.find(name);
+            std::map<std::string, size_t>::iterator it = m_ClientMap.find(name);
             if (it != m_ClientMap.end()) {
                 S2C_JoinRoomNtfMsg msg{roomName, userName};
                 msg.Serialize(m_SendBuf);
-                SendResponse(*it->second, &msg);
+                ClientInfo& client = m_Conn.clients.at(it->second);
+                SendResponse(client, &msg);
             }
         }
     }
@@ -181,14 +183,15 @@ int ChatRoomServer::AckLeaveRoom(ClientInfo& client, network::MessageStatus stat
 }
 
 // [send] S2C_LeaveRoomNtfMsg
-int ChatRoomServer::BroadcastLeaveRoom(ClientInfo& client, const std::set<std::string>& usersInRoom,
-                                       const std::string& roomName, const std::string& userName) {
+int ChatRoomServer::BroadcastLeaveRoom(const std::set<std::string>& usersInRoom, const std::string& roomName,
+                                       const std::string& userName) {
     for (const std::string& name : usersInRoom) {
-        std::map<std::string, ClientInfo*>::iterator it = m_ClientMap.find(name);
+        std::map<std::string, size_t>::iterator it = m_ClientMap.find(name);
         if (it != m_ClientMap.end()) {
             S2C_LeaveRoomNtfMsg msg{roomName, userName};
             msg.Serialize(m_SendBuf);
-            SendResponse(*it->second, &msg);
+            ClientInfo& client = m_Conn.clients.at(it->second);
+            SendResponse(client, &msg);
         }
     }
     return 0;
@@ -203,15 +206,15 @@ int ChatRoomServer::AckChatInRoom(ClientInfo& client, network::MessageStatus sta
 }
 
 // [send] S2C_ChatInRoomNtfMsg
-int ChatRoomServer::BroadcastChatInRoom(ClientInfo& client, const std::set<std::string>& usersInRoom,
-                                        const std::string& roomName, const std::string& userName,
-                                        const std::string& chat) {
+int ChatRoomServer::BroadcastChatInRoom(const std::set<std::string>& usersInRoom, const std::string& roomName,
+                                        const std::string& userName, const std::string& chat) {
     for (const std::string& name : usersInRoom) {
-        std::map<std::string, ClientInfo*>::iterator it = m_ClientMap.find(name);
+        std::map<std::string, size_t>::iterator it = m_ClientMap.find(name);
         if (it != m_ClientMap.end()) {
             S2C_ChatInRoomNtfMsg msg{roomName, userName, chat};
             msg.Serialize(m_SendBuf);
-            SendResponse(*it->second, &msg);
+            ClientInfo& client = m_Conn.clients.at(it->second);
+            SendResponse(client, &msg);
         }
     }
     return 0;
@@ -228,8 +231,8 @@ int ChatRoomServer::Initialize(uint16 port) {
     WSADATA wsaData;
     int result;
 
-    FD_ZERO(&g_Connection.activeSockets);
-    FD_ZERO(&g_Connection.socketsReadyForReading);
+    FD_ZERO(&m_Conn.activeSockets);
+    FD_ZERO(&m_Conn.socketsReadyForReading);
 
     // 1. WSAStartup
     result = WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -241,13 +244,13 @@ int ChatRoomServer::Initialize(uint16 port) {
     }
 
     // 2. getaddrinfo
-    ZeroMemory(&g_Connection.hints, sizeof(g_Connection.hints));
-    g_Connection.hints.ai_family = AF_INET;        // IPV4
-    g_Connection.hints.ai_socktype = SOCK_STREAM;  // Stream
-    g_Connection.hints.ai_protocol = IPPROTO_TCP;  // TCP
-    g_Connection.hints.ai_flags = AI_PASSIVE;
+    ZeroMemory(&m_Conn.hints, sizeof(m_Conn.hints));
+    m_Conn.hints.ai_family = AF_INET;        // IPV4
+    m_Conn.hints.ai_socktype = SOCK_STREAM;  // Stream
+    m_Conn.hints.ai_protocol = IPPROTO_TCP;  // TCP
+    m_Conn.hints.ai_flags = AI_PASSIVE;
 
-    result = getaddrinfo(NULL, std::to_string(port).c_str(), &g_Connection.hints, &g_Connection.info);
+    result = getaddrinfo(NULL, std::to_string(port).c_str(), &m_Conn.hints, &m_Conn.info);
     if (result != 0) {
         printf("getaddrinfo failed with error: %d\n", result);
         WSACleanup();
@@ -257,11 +260,11 @@ int ChatRoomServer::Initialize(uint16 port) {
     }
 
     // 3. Create our listen socket [Socket]
-    g_Connection.listenSocket =
-        socket(g_Connection.info->ai_family, g_Connection.info->ai_socktype, g_Connection.info->ai_protocol);
-    if (g_Connection.listenSocket == INVALID_SOCKET) {
+    m_Conn.listenSocket =
+        socket(m_Conn.info->ai_family, m_Conn.info->ai_socktype, m_Conn.info->ai_protocol);
+    if (m_Conn.listenSocket == INVALID_SOCKET) {
         printf("socket failed with error: %d\n", WSAGetLastError());
-        freeaddrinfo(g_Connection.info);
+        freeaddrinfo(m_Conn.info);
         WSACleanup();
         return result;
     } else {
@@ -271,11 +274,11 @@ int ChatRoomServer::Initialize(uint16 port) {
     // 4. Bind our socket [Bind]
     // 12,14,1,3:80				Address lengths can be different
     // 123,111,230,109:55555	Must specify the length
-    result = bind(g_Connection.listenSocket, g_Connection.info->ai_addr, (int)g_Connection.info->ai_addrlen);
+    result = bind(m_Conn.listenSocket, m_Conn.info->ai_addr, (int)m_Conn.info->ai_addrlen);
     if (result == SOCKET_ERROR) {
         printf("bind failed with error: %d\n", WSAGetLastError());
-        freeaddrinfo(g_Connection.info);
-        closesocket(g_Connection.listenSocket);
+        freeaddrinfo(m_Conn.info);
+        closesocket(m_Conn.listenSocket);
         WSACleanup();
         return result;
     } else {
@@ -283,11 +286,11 @@ int ChatRoomServer::Initialize(uint16 port) {
     }
 
     // 5. [Listen]
-    result = listen(g_Connection.listenSocket, SOMAXCONN);
+    result = listen(m_Conn.listenSocket, SOMAXCONN);
     if (result == SOCKET_ERROR) {
         printf("listen failed with error: %d\n", WSAGetLastError());
-        freeaddrinfo(g_Connection.info);
-        closesocket(g_Connection.listenSocket);
+        freeaddrinfo(m_Conn.info);
+        closesocket(m_Conn.listenSocket);
         WSACleanup();
         return result;
     } else {
@@ -311,8 +314,8 @@ int ChatRoomServer::SendResponse(ClientInfo& client, network::Message* msg) {
 // Shutdown and cleanup
 void ChatRoomServer::Shutdown() {
     printf("closing ...\n");
-    freeaddrinfo(g_Connection.info);
-    closesocket(g_Connection.listenSocket);
+    freeaddrinfo(m_Conn.info);
+    closesocket(m_Conn.listenSocket);
     WSACleanup();
 }
 
@@ -328,9 +331,14 @@ void ChatRoomServer::HandleMessage(network::MessageType msgType, ClientInfo& cli
 
             printf("authenticating user...\n");
             // TODO: user authentication
-            printf("user '%s' logged in.\n", userName.c_str());
+            printf("'%s' has logged in.\n", userName.c_str());
             // update client map
-            m_ClientMap.insert(std::make_pair(userName, &client));
+            for (size_t i = 0; i < m_Conn.clients.size(); i++) {
+                if (m_Conn.clients[i].socket == client.socket) {
+                    m_ClientMap.insert(std::make_pair(userName, i));
+                    break;
+                }
+            }
 
             // respond with S2C_LoginAckMsg
             AckLogin(client, MessageStatus::kSUCCESS, m_RoomNames);
@@ -343,6 +351,8 @@ void ChatRoomServer::HandleMessage(network::MessageType msgType, ClientInfo& cli
             uint32_t roomNameLength = m_RecvBuf.ReadUInt32LE();
             std::string roomName = m_RecvBuf.ReadString(roomNameLength);
 
+            printf("'%s' has joined #%s.\n", userName.c_str(), roomName.c_str());
+
             // add the user to room
             std::map<std::string, std::set<std::string>>::iterator it = m_RoomMap.find(roomName);
             if (it != m_RoomMap.end()) {
@@ -354,7 +364,7 @@ void ChatRoomServer::HandleMessage(network::MessageType msgType, ClientInfo& cli
                 AckJoinRoom(client, MessageStatus::kSUCCESS, roomName, userNames);
 
                 // broadcast event with S2C_JoinRoomNtfMsg
-                BroadcastJoinRoom(client, usersInRoom, roomName, userName);
+                BroadcastJoinRoom(usersInRoom, roomName, userName);
             } else {
                 // respond with S2C_JoinRoomAckMsg FAILURE
                 std::vector<std::string> placeHolder{};
@@ -370,6 +380,8 @@ void ChatRoomServer::HandleMessage(network::MessageType msgType, ClientInfo& cli
             uint32_t userNameLength = m_RecvBuf.ReadUInt32LE();
             std::string userName = m_RecvBuf.ReadString(userNameLength);
 
+            printf("'%s' has left #%s.\n", userName.c_str(), roomName.c_str());
+
             // remove the user from room
             std::map<std::string, std::set<std::string>>::iterator it = m_RoomMap.find(roomName);
             if (it != m_RoomMap.end()) {
@@ -383,7 +395,7 @@ void ChatRoomServer::HandleMessage(network::MessageType msgType, ClientInfo& cli
                 AckLeaveRoom(client, MessageStatus::kSUCCESS, roomName, userName);
 
                 // broadcast event with S2C_LeaveRoomNtfMsg
-                BroadcastLeaveRoom(client, usersInRoom, roomName, userName);
+                BroadcastLeaveRoom(usersInRoom, roomName, userName);
             } else {
                 // respond with S2C_LeaveRoomAckMsg FAILURE
                 AckLeaveRoom(client, MessageStatus::kFAILURE, roomName, userName);
@@ -400,6 +412,8 @@ void ChatRoomServer::HandleMessage(network::MessageType msgType, ClientInfo& cli
             uint32_t chatLength = m_RecvBuf.ReadUInt32LE();
             std::string chat = m_RecvBuf.ReadString(chatLength);
 
+            printf("'%s' - #%s: %s.\n", userName.c_str(), roomName.c_str(), chat.c_str());
+
             std::map<std::string, std::set<std::string>>::iterator it = m_RoomMap.find(roomName);
             if (it != m_RoomMap.end()) {
                 // respond with S2C_ChatInRoomAckMsg SUCCESS
@@ -407,7 +421,7 @@ void ChatRoomServer::HandleMessage(network::MessageType msgType, ClientInfo& cli
 
                 // broadcast event with S2C_ChatInRoomNtfMsg
                 std::set<std::string>& usersInRoom = it->second;
-                BroadcastChatInRoom(client, usersInRoom, roomName, userName, chat);
+                BroadcastChatInRoom(usersInRoom, roomName, userName, chat);
 
             } else {
                 // respond with S2C_ChatInRoomAckMsg FAILURE

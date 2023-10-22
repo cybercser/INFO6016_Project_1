@@ -7,9 +7,19 @@
 using namespace network;
 
 ChatRoomServer::ChatRoomServer(uint16 port) {
+    // init chatroom logic stuff
     m_RoomNames.push_back("graphics");
     m_RoomNames.push_back("network");
+    m_RoomNames.push_back("media");
+    m_RoomNames.push_back("configuration");
 
+    std::set<std::string> emptyUserSet{};
+    m_RoomMap.insert(std::make_pair("graphics", emptyUserSet));
+    m_RoomMap.insert(std::make_pair("network", emptyUserSet));
+    m_RoomMap.insert(std::make_pair("media", emptyUserSet));
+    m_RoomMap.insert(std::make_pair("configuration", emptyUserSet));
+
+    // init networking stuff
     int result = Initialize(port);
     if (result != 0) {
         //
@@ -61,7 +71,7 @@ int ChatRoomServer::RunLoop() {  // Define timeout for select()
             printf("select failed with error: %d\n", WSAGetLastError());
             return selectResult;
         }
-        printf(".");
+        printf(".\n");
 
         // Check if our ListenSocket is set. This checks if there is a
         // new client trying to connect to the server using a "connect"
@@ -106,29 +116,105 @@ int ChatRoomServer::RunLoop() {  // Define timeout for select()
                 // iterating through it. Want remove the client
                 // from the vector
                 if (recvResult == 0) {
-                    printf("Client disconnected!\n");
+                    printf("client disconnected!\n");
                     client.connected = false;
                     continue;
                 }
 
-                printf("Received %d bytes from the client!\n", recvResult);
+                printf("received %d bytes from client.\n", recvResult);
 
                 // We must receive 4 bytes before we know how long the packet actually is
                 // We must receive the entire packet before we can handle the message.
                 // Our protocol says we have a HEADER[pktsize, messagetype];
-                Buffer recvBuf{m_RawRecvBuf, kRECV_BUF_SIZE};
-                uint32_t packetSize = recvBuf.ReadUInt32LE();
-                MessageType messageType = static_cast<MessageType>(recvBuf.ReadUInt32LE());
+                m_RecvBuf.Set(m_RawRecvBuf, kRECV_BUF_SIZE);
+                uint32_t packetSize = m_RecvBuf.ReadUInt32LE();
+                MessageType messageType = static_cast<MessageType>(m_RecvBuf.ReadUInt32LE());
 
-                if (recvBuf.Size() >= packetSize) {
+                if (m_RecvBuf.Size() >= packetSize) {
                     // We can finally handle our message
-                    HandleMessage(messageType, client, recvBuf, m_SendBuf);
+                    HandleMessage(messageType, client);
                 }
 
                 FD_CLR(client.socket, &g_Connection.socketsReadyForReading);
             }
         }
     }
+}
+
+// [send] S2C_LoginAckMsg
+int ChatRoomServer::AckLogin(ClientInfo& client, MessageStatus status, const std::vector<std::string>& roomNames) {
+    S2C_LoginAckMsg msg{MessageStatus::kSUCCESS, m_RoomNames};
+    msg.Serialize(m_SendBuf);
+    return SendResponse(client, &msg);
+}
+
+// [send] S2C_JoinRoomAckMsg
+int ChatRoomServer::AckJoinRoom(ClientInfo& client, network::MessageStatus status, const std::string& roomName,
+                                std::vector<std::string>& userNames) {
+    S2C_JoinRoomAckMsg msg{static_cast<uint16>(status), roomName, userNames};
+    msg.Serialize(m_SendBuf);
+    return SendResponse(client, &msg);
+}
+
+// [send] S2C_JoinRoomNtfMsg
+int ChatRoomServer::BroadcastJoinRoom(ClientInfo& client, const std::set<std::string>& usersInRoom,
+                                      const std::string& roomName, const std::string& userName) {
+    for (const std::string& name : usersInRoom) {
+        if (name != userName) {
+            std::map<std::string, ClientInfo*>::iterator it = m_ClientMap.find(name);
+            if (it != m_ClientMap.end()) {
+                S2C_JoinRoomNtfMsg msg{roomName, userName};
+                msg.Serialize(m_SendBuf);
+                SendResponse(*it->second, &msg);
+            }
+        }
+    }
+    return 0;
+}
+
+// [send] S2C_LeaveRoomAckMsg
+int ChatRoomServer::AckLeaveRoom(ClientInfo& client, network::MessageStatus status, const std::string& roomName,
+                                 const std::string& userName) {
+    S2C_LeaveRoomAckMsg msg{static_cast<uint16>(status), roomName, userName};
+    msg.Serialize(m_SendBuf);
+    return SendResponse(client, &msg);
+}
+
+// [send] S2C_LeaveRoomNtfMsg
+int ChatRoomServer::BroadcastLeaveRoom(ClientInfo& client, const std::set<std::string>& usersInRoom,
+                                       const std::string& roomName, const std::string& userName) {
+    for (const std::string& name : usersInRoom) {
+        std::map<std::string, ClientInfo*>::iterator it = m_ClientMap.find(name);
+        if (it != m_ClientMap.end()) {
+            S2C_LeaveRoomNtfMsg msg{roomName, userName};
+            msg.Serialize(m_SendBuf);
+            SendResponse(*it->second, &msg);
+        }
+    }
+    return 0;
+}
+
+// [send] S2C_ChatInRoomAckMsg
+int ChatRoomServer::AckChatInRoom(ClientInfo& client, network::MessageStatus status, const std::string& roomName,
+                                  const std::string& userName) {
+    S2C_ChatInRoomAckMsg msg{MessageStatus::kSUCCESS, roomName, userName};
+    msg.Serialize(m_SendBuf);
+    return SendResponse(client, &msg);
+}
+
+// [send] S2C_ChatInRoomNtfMsg
+int ChatRoomServer::BroadcastChatInRoom(ClientInfo& client, const std::set<std::string>& usersInRoom,
+                                        const std::string& roomName, const std::string& userName,
+                                        const std::string& chat) {
+    for (const std::string& name : usersInRoom) {
+        std::map<std::string, ClientInfo*>::iterator it = m_ClientMap.find(name);
+        if (it != m_ClientMap.end()) {
+            S2C_ChatInRoomNtfMsg msg{roomName, userName, chat};
+            msg.Serialize(m_SendBuf);
+            SendResponse(*it->second, &msg);
+        }
+    }
+    return 0;
 }
 
 // Initialization includes:
@@ -212,9 +298,9 @@ int ChatRoomServer::Initialize(uint16 port) {
 }
 
 // Send response to client
-int ChatRoomServer::SendResponse(ClientInfo& client, network::Buffer& sendBuf, network::Message* msg) {
+int ChatRoomServer::SendResponse(ClientInfo& client, network::Message* msg) {
     // https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-send
-    int sendResult = send(client.socket, sendBuf.ConstData(), msg->header.packetSize, 0);
+    int sendResult = send(client.socket, m_SendBuf.ConstData(), msg->header.packetSize, 0);
     if (sendResult == SOCKET_ERROR) {
         printf("send failed with error %d\n", WSAGetLastError());
         WSACleanup();
@@ -231,34 +317,31 @@ void ChatRoomServer::Shutdown() {
 }
 
 // Handle received messages
-void ChatRoomServer::HandleMessage(network::MessageType msgType, ClientInfo& client, network::Buffer& recvBuf,
-                                   network::Buffer& sendBuf) {
+void ChatRoomServer::HandleMessage(network::MessageType msgType, ClientInfo& client) {
     switch (msgType) {
         // received C2S_LoginReqMsg
         case MessageType::kLOGIN_REQ: {
-            uint32_t userNameLength = recvBuf.ReadUInt32LE();
-            std::string userName = recvBuf.ReadString(userNameLength);
-            uint32_t passwordLength = recvBuf.ReadUInt32LE();
-            std::string password = recvBuf.ReadString(passwordLength);
+            uint32_t userNameLength = m_RecvBuf.ReadUInt32LE();
+            std::string userName = m_RecvBuf.ReadString(userNameLength);
+            uint32_t passwordLength = m_RecvBuf.ReadUInt32LE();
+            std::string password = m_RecvBuf.ReadString(passwordLength);
 
             printf("authenticating user...\n");
             // TODO: user authentication
-            printf("user %s logged in.\n", userName.c_str());
+            printf("user '%s' logged in.\n", userName.c_str());
             // update client map
             m_ClientMap.insert(std::make_pair(userName, &client));
 
             // respond with S2C_LoginAckMsg
-            S2C_LoginAckMsg msg{MessageStatus::kSUCCESS, m_RoomNames};
-            msg.Serialize(sendBuf);
-            SendResponse(client, sendBuf, &msg);
+            AckLogin(client, MessageStatus::kSUCCESS, m_RoomNames);
         } break;
 
         // received C2S_JoinRoomReqMsg
         case MessageType::kJOIN_ROOM_REQ: {
-            uint32_t userNameLength = recvBuf.ReadUInt32LE();
-            std::string userName = recvBuf.ReadString(userNameLength);
-            uint32_t roomNameLength = recvBuf.ReadUInt32LE();
-            std::string roomName = recvBuf.ReadString(roomNameLength);
+            uint32_t userNameLength = m_RecvBuf.ReadUInt32LE();
+            std::string userName = m_RecvBuf.ReadString(userNameLength);
+            uint32_t roomNameLength = m_RecvBuf.ReadUInt32LE();
+            std::string roomName = m_RecvBuf.ReadString(roomNameLength);
 
             // add the user to room
             std::map<std::string, std::set<std::string>>::iterator it = m_RoomMap.find(roomName);
@@ -268,38 +351,24 @@ void ChatRoomServer::HandleMessage(network::MessageType msgType, ClientInfo& cli
 
                 // respond with S2C_JoinRoomAckMsg SUCCESS
                 std::vector<std::string> userNames{usersInRoom.begin(), usersInRoom.end()};
-                S2C_JoinRoomAckMsg msg{MessageStatus::kSUCCESS, roomName, userNames};
-                msg.Serialize(sendBuf);
-                SendResponse(client, sendBuf, &msg);
+                AckJoinRoom(client, MessageStatus::kSUCCESS, roomName, userNames);
 
                 // broadcast event with S2C_JoinRoomNtfMsg
-                for (const std::string& name : usersInRoom) {
-                    if (name != userName) {
-                        std::map<std::string, ClientInfo*>::iterator it = m_ClientMap.find(name);
-                        if (it != m_ClientMap.end()) {
-                            S2C_JoinRoomNtfMsg msg{roomName, userName};
-                            msg.Serialize(sendBuf);
-                            SendResponse(*it->second, sendBuf, &msg);
-                        }
-                    }
-                }
-
+                BroadcastJoinRoom(client, usersInRoom, roomName, userName);
             } else {
                 // respond with S2C_JoinRoomAckMsg FAILURE
                 std::vector<std::string> placeHolder{};
-                S2C_JoinRoomAckMsg msg{MessageStatus::kFAILURE, roomName, placeHolder};
-                msg.Serialize(sendBuf);
-                SendResponse(client, sendBuf, &msg);
+                AckJoinRoom(client, MessageStatus::kFAILURE, roomName, placeHolder);
             }
 
         } break;
 
         // received C2S_LeaveRoomReqMsg
         case MessageType::kLEAVE_ROOM_REQ: {
-            uint32_t roomNameLength = recvBuf.ReadUInt32LE();
-            std::string roomName = recvBuf.ReadString(roomNameLength);
-            uint32_t userNameLength = recvBuf.ReadUInt32LE();
-            std::string userName = recvBuf.ReadString(userNameLength);
+            uint32_t roomNameLength = m_RecvBuf.ReadUInt32LE();
+            std::string roomName = m_RecvBuf.ReadString(roomNameLength);
+            uint32_t userNameLength = m_RecvBuf.ReadUInt32LE();
+            std::string userName = m_RecvBuf.ReadString(userNameLength);
 
             // remove the user from room
             std::map<std::string, std::set<std::string>>::iterator it = m_RoomMap.find(roomName);
@@ -311,66 +380,44 @@ void ChatRoomServer::HandleMessage(network::MessageType msgType, ClientInfo& cli
                 }
 
                 // respond with S2C_LeaveRoomAckMsg SUCCESS
-                S2C_LeaveRoomAckMsg msg{MessageStatus::kSUCCESS, roomName, userName};
-                msg.Serialize(sendBuf);
-                SendResponse(client, sendBuf, &msg);
+                AckLeaveRoom(client, MessageStatus::kSUCCESS, roomName, userName);
 
                 // broadcast event with S2C_LeaveRoomNtfMsg
-                for (const std::string& name : usersInRoom) {
-                    std::map<std::string, ClientInfo*>::iterator it = m_ClientMap.find(name);
-                    if (it != m_ClientMap.end()) {
-                        S2C_LeaveRoomNtfMsg msg{roomName, userName};
-                        msg.Serialize(sendBuf);
-                        SendResponse(*it->second, sendBuf, &msg);
-                    }
-                }
-
+                BroadcastLeaveRoom(client, usersInRoom, roomName, userName);
             } else {
                 // respond with S2C_LeaveRoomAckMsg FAILURE
-                S2C_LeaveRoomAckMsg msg{MessageStatus::kFAILURE, roomName, userName};
-                msg.Serialize(sendBuf);
-                SendResponse(client, sendBuf, &msg);
+                AckLeaveRoom(client, MessageStatus::kFAILURE, roomName, userName);
             }
 
         } break;
 
         // received C2S_ChatInRoomReqMsg
         case MessageType::kCHAT_IN_ROOM_REQ: {
-            uint32_t roomNameLength = recvBuf.ReadUInt32LE();
-            std::string roomName = recvBuf.ReadString(roomNameLength);
-            uint32_t userNameLength = recvBuf.ReadUInt32LE();
-            std::string userName = recvBuf.ReadString(userNameLength);
-            uint32_t chatLength = recvBuf.ReadUInt32LE();
-            std::string chat = recvBuf.ReadString(chatLength);
+            uint32_t roomNameLength = m_RecvBuf.ReadUInt32LE();
+            std::string roomName = m_RecvBuf.ReadString(roomNameLength);
+            uint32_t userNameLength = m_RecvBuf.ReadUInt32LE();
+            std::string userName = m_RecvBuf.ReadString(userNameLength);
+            uint32_t chatLength = m_RecvBuf.ReadUInt32LE();
+            std::string chat = m_RecvBuf.ReadString(chatLength);
 
             std::map<std::string, std::set<std::string>>::iterator it = m_RoomMap.find(roomName);
             if (it != m_RoomMap.end()) {
                 // respond with S2C_ChatInRoomAckMsg SUCCESS
-                S2C_ChatInRoomAckMsg msg{MessageStatus::kSUCCESS, roomName, userName};
-                msg.Serialize(sendBuf);
-                SendResponse(client, sendBuf, &msg);
+                AckChatInRoom(client, MessageStatus::kSUCCESS, roomName, userName);
 
                 // broadcast event with S2C_ChatInRoomNtfMsg
                 std::set<std::string>& usersInRoom = it->second;
-                for (const std::string& name : usersInRoom) {
-                    std::map<std::string, ClientInfo*>::iterator it = m_ClientMap.find(name);
-                    if (it != m_ClientMap.end()) {
-                        S2C_ChatInRoomNtfMsg msg{roomName, userName, chat};
-                        msg.Serialize(sendBuf);
-                        SendResponse(*it->second, sendBuf, &msg);
-                    }
-                }
+                BroadcastChatInRoom(client, usersInRoom, roomName, userName, chat);
+
             } else {
                 // respond with S2C_ChatInRoomAckMsg FAILURE
-                S2C_ChatInRoomAckMsg msg{MessageStatus::kFAILURE, roomName, userName};
-                msg.Serialize(sendBuf);
-                SendResponse(client, sendBuf, &msg);
+                AckChatInRoom(client, MessageStatus::kFAILURE, roomName, userName);
             }
 
         } break;
 
         default:
-            printf("Unknown message.\n");
+            printf("unknown message.\n");
             break;
     }
 }

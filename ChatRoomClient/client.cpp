@@ -216,6 +216,7 @@ void ChatRoomClient::PrintRooms(const std::vector<std::string>& roomNames) const
     for (size_t i = 0; i < roomNames.size(); i++) {
         std::cout << i + 1 << " " << roomNames[i] << std::endl;
     }
+    std::cout << "-------------\n";
 }
 
 // print the users in a room
@@ -230,6 +231,7 @@ void ChatRoomClient::PrintUsersInRoom(const std::string& roomName) const {
             i++;
         }
     }
+    std::cout << "---------------------\n";
 }
 
 // Handle received messages

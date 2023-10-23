@@ -1,5 +1,8 @@
-#include <cstdio>
+#include <conio.h>
+
+#include <iostream>
 #include <random>
+#include <thread>
 
 #include "client.h"
 
@@ -29,6 +32,12 @@ std::string MumboJumbo() {
     return sentence;
 }
 
+void RecvLoop(ChatRoomClient* client) {
+    while (true) {
+        client->RecvResponse();
+    }
+}
+
 int main(int argc, char** argv) {
     std::string userName{"Fan"};
     std::string password{"Fanshawe"};
@@ -40,34 +49,49 @@ int main(int argc, char** argv) {
 
     ChatRoomClient client{"127.0.0.1", DEFAULT_PORT};
 
-    client.ReqLogin(userName, password);
-    client.RecvResponse();
-    getchar();
+    std::thread t{RecvLoop, &client};
 
-    // join #graphics
-    client.ReqJoinRoom("graphics");
-    client.RecvResponse();
-    getchar();
+    std::cout << "Pressed Enter key to execute each step" << std::endl;
 
-    // join #network
-    client.ReqJoinRoom("network");
-    client.RecvResponse();
-    getchar();
+    // Send messages to the server when a key is pressed
+    int step = 0;
+    int bQuit = false;
+    while (!bQuit) {
+        if (_kbhit()) {
+            char key = _getch();
+            if (key == '\r') {
+                // Pressed Enter key to execute each step
+                switch (step) {
+                    case 0:
+                        std::cout << "ReqLogin" << std::endl;
+                        client.ReqLogin(userName, password);
+                        break;
+                    case 1:
+                        std::cout << "ReqJoinRoom #graphics" << std::endl;
+                        client.ReqJoinRoom("graphics");
+                        break;
+                    case 2:
+                        std::cout << "ReqJoinRoom #network" << std::endl;
+                        client.ReqJoinRoom("network");
+                        break;
+                    case 4:
+                        std::cout << "ReqLeaveRoom #graphics" << std::endl;
+                        client.ReqLeaveRoom("graphics");
+                        break;
+                    case 3:
+                        std::cout << "ReqChatInRoom" << std::endl;
+                        client.ReqChatInRoom("network", MumboJumbo());
+                        break;
+                    default:
+                        bQuit = true;
+                        break;
+                }
+                step++;
+            }
+        }
+    }
 
-    // leave #graphics
-    client.ReqLeaveRoom("graphics");
-    client.RecvResponse();
-    getchar();
-
-    // chat in #network
-    client.ReqChatInRoom("network", MumboJumbo());
-    client.RecvResponse();
-    getchar();
-
-    // leave #network
-    client.ReqLeaveRoom("network");
-    client.RecvResponse();
-    getchar();
+    t.join();
 
     return 0;
 }
